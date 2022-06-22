@@ -1,0 +1,138 @@
+---
+title: "financial-api-vignette"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Financial API and Exploratory Data Analysis
+
+This is an R Markdown format used for publishing markdown documents to GitHub. When you click the **Knit** button all R code chunks are run and a markdown file (.md) suitable for publishing to GitHub is generated.
+
+# Requirements
+
+The following libraries are required to use the Financial API
+
+* `tidyverse`: Many useful functions.
+* `jsonlite`: Convert JSON into usable data
+* `httr`: To get the information from the polygon API
+* `memoise`: To prevent repeated calls to the API for the same information
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)
+library(jsonlite)
+library(httr)
+library(memoise)
+apiKey <- "To187CFZpgDYlj0_gWheNbOaw4MxRzvh"
+```
+
+# API Interaction Functions
+
+## Helper Functions
+
+### `retrieveJSON`
+
+Utilizes `GET` and `fromJSON` to retrieve a JSON type object and convert it into something usable.  Uses `memoise` to prevent repeated queries to the API for the same information.
+
+```{r}
+retrieveContent_fun <- function(URL = "https://api.polygon.io", path, query = list()) {
+  # Create query list
+  query$apiKey = apiKey
+  
+  # Get the results from the server
+  results <- GET(URL, path = path, query = query)
+  
+  # Convert from a JSON
+  content <- rawToChar(results$content) %>% 
+    fromJSON()  
+  
+  return(content)
+}
+retrieveContent <- memoise(retrieveContent_fun)
+```
+
+
+### `getTickerTypes`
+
+This function gets the proper ticker type values to use in queries.  Functionality from `memoise` package is used here so that information only need to be looked up once.
+
+```{r}
+# Helper function to build the URL
+getTickerTypes <- function() {
+  # Retrieve JSON from the api 
+  content <- retrieveContent(path = "/v3/reference/tickers/types")
+  
+  # Create lookup table
+  output <- tolower(content$results$description)
+  names(output) <- tolower(content$results$code)
+  
+  # Return the output
+  return(output)
+}
+```
+
+### `getTickers`
+
+This function returns the proper ticker based on the search parameter and the type of ticker.  Could be expanded with other optional parameters of the Tickers Reference Data Endpoint.
+
+```{r}
+# Helper function to query$search for symbol
+getTickers <- function(search, type = "") {
+  # Storage for options to be passed to the API
+  query <- list(search = search)
+  
+  # Check if valid optional parameters were entered
+  # Currently supported: type
+  
+  # type should match one of the types in getTickerTypes
+  if (type != "") {
+    # Get the valid ticker types
+    types <- getTickerTypes()
+    
+    # Check if the type is an code or a description
+    if (type %in% names(types)) {
+      # type is already a code
+      query$type <- type
+    } 
+    else {
+      # Check if type is a description
+      if (type %in% types) {
+        # use look up table to get correct code form description
+        query$type <- types[type]
+      }
+      else {
+        # type is neither a code or a description so throw an error
+        stop(paste0(types, " is not a valid type"))
+      }
+    }
+  }
+
+  # Retrieve the information on the ticker(s)
+  content <- retrieveContent(path = "/v3/reference/tickers",
+                             query = query)
+  
+  # Check for zero or multiple results
+  if (is_empty(content$results)) {
+    message <- paste0("No tickers mateched \"", query$search, "\"")
+    stop(message)
+  } 
+  else if (length(content$results$ticker) > 1) {
+    # Check for an exact match to a ticker, case insensitive
+    if (tolower(content$results$ticker) == tolower(query$search)) {
+      return(content$results$ticker)
+    } 
+    else {
+      message <- paste0("Multiple tickers matched \"", 
+                      query$search, "\":\n", toString(content$results$ticker),
+                      "\n", toString(content$results$name))
+      stop(message)
+    }
+  }
+  else {
+    return(content$results$ticker)
+  }
+}
+```
+
