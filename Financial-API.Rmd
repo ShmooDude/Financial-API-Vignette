@@ -19,12 +19,14 @@ The following libraries are required to use the Financial API
 * `jsonlite`: Convert JSON into usable data
 * `httr`: To get the information from the polygon API
 * `memoise`: To prevent repeated calls to the API for the same information
+* `lubridate`: For easier handling of date/time.
 
 ```{r, echo = FALSE, message = FALSE, warning = FALSE}
 library(tidyverse)
 library(jsonlite)
 library(httr)
 library(memoise)
+library(lubridate)
 apiKey <- "To187CFZpgDYlj0_gWheNbOaw4MxRzvh"
 ```
 
@@ -37,7 +39,7 @@ apiKey <- "To187CFZpgDYlj0_gWheNbOaw4MxRzvh"
 Utilizes `GET` and `fromJSON` to retrieve a JSON type object and convert it into something usable.  Uses `memoise` to prevent repeated queries to the API for the same information.
 
 ```{r}
-retrieveContent_fun <- function(URL = "https://api.polygon.io", path, query = list()) {
+getFromJSON_fun <- function(URL = "https://api.polygon.io", path, query = list()) {
   # Create query list
   query$apiKey = apiKey
   
@@ -49,18 +51,18 @@ retrieveContent_fun <- function(URL = "https://api.polygon.io", path, query = li
     fromJSON()
   
   # Continue getting information until finished
-  while(exists("next_url", content)) {
-    results <- GET(content$next_url, query = query)
-    
-    new_content <- rawToChar(results$content) %>% 
-      fromJSON()
-    
-    append(content, new_content)
-  }
+  # while(exists("next_url", content)) {
+  #   results <- GET(content$next_url, query = query)
+  #   
+  #   new_content <- rawToChar(results$content) %>% 
+  #     fromJSON()
+  #   
+  #   append(content, new_content)
+  # }
   
   return(content)
 }
-retrieveContent <- memoise(retrieveContent_fun)
+getFromJSON <- memoise(getFromJSON_fun)
 ```
 
 
@@ -72,7 +74,7 @@ This function gets the proper ticker type values to use in queries.  Functionali
 # Helper function to build the URL
 getTickerTypes <- function() {
   # Retrieve JSON from the api 
-  content <- retrieveContent(path = "/v3/reference/tickers/types")
+  content <- getFromJSON(path = "/v3/reference/tickers/types")
   
   # Create lookup table
   output <- tolower(content$results$description)
@@ -122,7 +124,7 @@ getTickers <- function(search, type = "",
   }
 
   # Retrieve the information on the ticker(s)
-  content <- retrieveContent(path = "/v3/reference/tickers",
+  content <- getFromJSON(path = "/v3/reference/tickers",
                              query = query)
   
   # Check for zero or multiple results
@@ -148,34 +150,39 @@ getTickers <- function(search, type = "",
 }
 ```
 
-### `getTickerDetails`
+### `getTickerName`
 
-This function returns detailed information about a particular ticker.
+This function returns the name of a particular ticker.
 
 ```{r}
-getTickerDetails <- function(search) {
+getTickerName <- function(search, ...) {
   # Retrieve the proper ticker for the search query
-  ticker <- getTickers(search)
+  ticker <- getTickers(search, ...)
   
   # Retrieve the detailed information on the ticker
-  content <- retrieveContent(path = paste0("/v3/reference/tickers/", ticker))
+  output <- getFromJSON(path = paste0("/v3/reference/tickers/", ticker))
+  
+  output$results[1:2] %>%
+    as_tibble()
 }
 ```
 
+## Main Function
+
 ### `getAggregates`
 
-Takes a particular ticker retrieves the open/close information for a number of days specified from the current date.
+Takes a particular ticker retrieves the pricing information for the date span specified.  Dates should be formatted `YYYY-MM-DD`
 
 ```{r}
 getAggregates <- function(search, multiplier = 1, 
                           timespan = c("day", "week", 
                                        "month", "quarter", "year"),
-                          from, to) {
+                          from, to, ...) {
   # Storage for options to be passed to the API
   timespan <- match.arg(timespan)
   
   # Retrieve the proper ticker for the search query
-  ticker <- getTickers(search)
+  ticker <- getTickers(search, ...)
   
   path = paste("/v2/aggs/ticker",
                                ticker, "range", multiplier, timespan, 
@@ -183,13 +190,17 @@ getAggregates <- function(search, multiplier = 1,
                                sep = "/")
   
   # Retrieve the aggregates information on the ticker
-  content <- retrieveContent(path = paste("/v2/aggs/ticker",
+  output <- getFromJSON(path = paste("/v2/aggs/ticker",
                                ticker, "range", multiplier, timespan, 
                                from, to,
-                               sep = "/"))
+                               sep = "/")) %>% 
+    as_tibble() %>% 
+    select(ticker, results) %>% 
+    unnest(results)
+  
+  # Convert timestamp into a date
+  output$t <- as_datetime(output$t/1000) %>% as_date()
+  
+  return(output)
 }
-test <- getAggregates("TSLA", from = "2020-07-22", to = "2021-07-22")
-as.Date(as.POSIXct(test$results$t/1000, origin = "1970-01-01") )
 ```
-
-
