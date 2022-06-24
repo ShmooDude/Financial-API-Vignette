@@ -9,7 +9,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Financial API and Exploratory Data Analysis
 
-This is an R Markdown format used for publishing markdown documents to GitHub. When you click the **Knit** button all R code chunks are run and a markdown file (.md) suitable for publishing to GitHub is generated.
+
 
 # Requirements
 
@@ -46,7 +46,17 @@ retrieveContent_fun <- function(URL = "https://api.polygon.io", path, query = li
   
   # Convert from a JSON
   content <- rawToChar(results$content) %>% 
-    fromJSON()  
+    fromJSON()
+  
+  # Continue getting information until finished
+  while(exists("next_url", content)) {
+    results <- GET(content$next_url, query = query)
+    
+    new_content <- rawToChar(results$content) %>% 
+      fromJSON()
+    
+    append(content, new_content)
+  }
   
   return(content)
 }
@@ -79,9 +89,11 @@ This function returns the proper ticker based on the search parameter and the ty
 
 ```{r}
 # Helper function to query$search for symbol
-getTickers <- function(search, type = "") {
+getTickers <- function(search, type = "", 
+                       market = c("", "stocks", "crypto", "fx", "otc")) {
   # Storage for options to be passed to the API
   query <- list(search = search)
+  query$market <- match.arg(market)
   
   # Check if valid optional parameters were entered
   # Currently supported: type
@@ -104,7 +116,7 @@ getTickers <- function(search, type = "") {
       }
       else {
         # type is neither a code or a description so throw an error
-        stop(paste0(types, " is not a valid type"))
+        stop(paste0(type, " is not a valid type"))
       }
     }
   }
@@ -135,4 +147,49 @@ getTickers <- function(search, type = "") {
   }
 }
 ```
+
+### `getTickerDetails`
+
+This function returns detailed information about a particular ticker.
+
+```{r}
+getTickerDetails <- function(search) {
+  # Retrieve the proper ticker for the search query
+  ticker <- getTickers(search)
+  
+  # Retrieve the detailed information on the ticker
+  content <- retrieveContent(path = paste0("/v3/reference/tickers/", ticker))
+}
+```
+
+### `getAggregates`
+
+Takes a particular ticker retrieves the open/close information for a number of days specified from the current date.
+
+```{r}
+getAggregates <- function(search, multiplier = 1, 
+                          timespan = c("day", "week", 
+                                       "month", "quarter", "year"),
+                          from, to) {
+  # Storage for options to be passed to the API
+  timespan <- match.arg(timespan)
+  
+  # Retrieve the proper ticker for the search query
+  ticker <- getTickers(search)
+  
+  path = paste("/v2/aggs/ticker",
+                               ticker, "range", multiplier, timespan, 
+                               from, to,
+                               sep = "/")
+  
+  # Retrieve the aggregates information on the ticker
+  content <- retrieveContent(path = paste("/v2/aggs/ticker",
+                               ticker, "range", multiplier, timespan, 
+                               from, to,
+                               sep = "/"))
+}
+test <- getAggregates("TSLA", from = "2020-07-22", to = "2021-07-22")
+as.Date(as.POSIXct(test$results$t/1000, origin = "1970-01-01") )
+```
+
 
