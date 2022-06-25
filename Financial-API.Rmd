@@ -1,6 +1,7 @@
 ---
 title: "financial-api-vignette"
-output: github_document
+# author: "Mark Gordon"
+# date: "06-25-2022"
 ---
 
 ```{r setup, include=FALSE}
@@ -9,26 +10,26 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 
 # Financial API and Exploratory Data Analysis
 
-
+The following serves as a vignette to show one possible way to access the Financial API on `polygon.io`.
 
 # Requirements
 
 The following libraries are required to use the Financial API
 
 * `tidyverse`: Many useful functions.
-* `jsonlite`: Convert JSON into usable data
 * `httr`: To get the information from the polygon API
+* `jsonlite`: Convert JSON into usable data
 * `memoise`: To prevent repeated calls to the API for the same information
-* `lubridate`: For easier handling of date/time.
 * `ratelimitr`: Limits the query rate to the API below the required 5 per minute
+* `lubridate`: For easier handling of date/time.
 
 ```{r, echo = FALSE}
 library(tidyverse)
-library(jsonlite)
 library(httr)
+library(jsonlite)
 library(memoise)
-library(lubridate)
 library(ratelimitr)
+library(lubridate)
 apiKey <- "To187CFZpgDYlj0_gWheNbOaw4MxRzvh"
 ```
 
@@ -77,7 +78,7 @@ This function gets the proper ticker type values to use in queries.  Functionali
 
 ```{r}
 # Helper function to build the URL
-getTickerTypes <- function() {
+getTickerTypes_fun <- function() {
   # Retrieve JSON from the api 
   content <- getFromJSON(path = "/v3/reference/tickers/types")
   
@@ -88,6 +89,7 @@ getTickerTypes <- function() {
   # Return the output
   return(output)
 }
+getTickerTypes <- memoise(getTickerTypes_fun)
 ```
 
 ### `getTickers`
@@ -160,9 +162,9 @@ getTickers <- function(search, type = "",
 This function returns the name of a particular ticker.
 
 ```{r}
-getTickerName <- function(search) {
+getTickerName <- function(search, ...) {
   # Retrieve the proper ticker for the search query
-  ticker <- getTickers(search)
+  ticker <- getTickers(search, ...)
   
   # Retrieve the detailed information on the ticker
   output <- getFromJSON(path = paste0("/v3/reference/tickers/", ticker))
@@ -181,12 +183,12 @@ Takes a particular ticker retrieves the pricing information for the date span sp
 getAggregates <- function(search, multiplier = 1, 
                           timespan = c("day", "week", 
                                        "month", "quarter", "year"),
-                          from, to) {
+                          from, to, ...) {
   # Storage for options to be passed to the API
   timespan <- match.arg(timespan)
   
   # Retrieve the proper ticker for the search query
-  ticker <- getTickers(search)
+  ticker <- getTickers(search, ...)
   
   path = paste("/v2/aggs/ticker",
                                ticker, "range", multiplier, timespan, 
@@ -223,10 +225,34 @@ apple <- getAggregates("aapl", from = "2021-01-01", to = "2021-12-31") %>%
 # Combine data frames and add new variable
 year <- bind_rows(msft, apple) 
 
+# Create a gain variable to show the percentage change from open to close each day.
 year <- mutate(year, gain = (c / o)*100-100)
+
+year %>%
+  group_by(ticker) %>%
+  summarize(c = quantile(c), trn = quantile(n)) %>%
+  add_column(quantile = rep(c("Min", "25p", "Med", "75p", "Max"), 2)) %>%
+  pivot_wider(names_from = quantile, values_from = c(c, trn))
 ```
 
+### Closing price in 2021
+
+First, lets look at their price history over the year 2021.
+
+```{r}
+g <- ggplot(year)
+
+g + aes(x = t, y = c, color = ticker) + 
+  geom_line() +
+  labs(title = "Daily closing price over 2021",
+       x = "Date", y = "Closing Price")
+```
+
+Their trend lines look quite similar, leading us to believe that they are correlated.
+
 ### Gain correlation
+
+Lets create a gain variable so we can see the percentage gain or loss from each day.  Then we will plot the gains and losses against the other to visualize any correlation.
 
 ```{r}
 gain_wider <- year %>% select(name, gain) %>%
@@ -237,44 +263,64 @@ ggplot(gain_wider, aes(x = `Microsoft Corp`, y = `Apple Inc.`)) +
   geom_point() +
   geom_smooth(method=lm, se=FALSE) + 
   labs(title = "Correlation Graph")
+
+correlation <- round(cor(gain_wider["Microsoft Corp"], gain_wider["Apple Inc."])*100, 0)
 ```
 
-As we can see, the two are positively correlated with `r round(cor(gain_wider["Microsoft Corp"], gain_wider["Apple Inc."])*100, 0)`% correlation.
+As we can see, the two are positively correlated with `r correlation`% correlation.
 
-### Contengency table
+### Looking at gains categorically.
 
-NEEDED
-
-### Histogram
+Next, lets take a look at the breakdown of large and small losses/gains.  The breakpoints are -1.5, 0 and 1.5.
 
 ```{r}
-g <- ggplot(year)
-
-g + aes(x = n) + 
-  geom_histogram() +
-  geom_density() +
-  facet_grid(~name) +
-  labs(title = "Histogram of number of transactions per day")
+year <- year %>% mutate(gain_size = cut(gain, 
+                                           breaks = c(-Inf, -1.5, 0, 1.5, Inf),
+                                           labels = c("BigLoss", "SmallLoss", 
+                                                      "SmallGain", "BigGain")))
+table(year$gain_size, year$name)
 ```
 
-### Boxplot
 
-NEEDS FIXING
+### Histogram and boxplot of the number of transactions per day
+
+Next, lets move our attention over to the number of transactions made per day on each of these stocks.  First a histogram:
 
 ```{r}
-g + aes(x = n) + 
+g + aes(x = n, y = ..density.., fill = ticker) + 
+  geom_histogram(position = "identity", alpha = 0.5) +
+  geom_density(alpha = 0.5) +
+  labs(title = "Histogram of number of transactions per day",
+       x = "Number of transactions per day", y = "Density")
+```
+
+And then a boxplot:
+
+```{r}
+g + aes(x = n, color = ticker) + 
   coord_flip() +
   geom_boxplot() +
+  geom_dotplot(stackdir = "center", dotsize = 0.4) +
   facet_grid(~name) +
-  labs(title = "Boxplot of number of transactions per day")
+  labs(title = "Boxplot of number of transactions per day",
+       x = "Number of Transactions per day", y = "") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
 ```
 
-### Line
+Both are right skewed but Apple is much more heavily tailed than Microsoft, and has a higher mean number of transactions.
+
+### Relationship between big gain/loss and the number of transactions
+
+Finally, lets see if there's a relationship between the big gain/loss, which Apple had more of, and the number of transactions, which Apple also had more of
 
 ```{r}
-g + aes(x = t, y = c) + 
-  geom_line() +
-  facet_grid(~name) +
-  labs(title = "Closing price over 2021",
-       x = "Date", y = "Closing Price")
+g + aes(x = n, y = gain, color = ticker) +
+  geom_point() +
+  labs(title = "Scatterplot of number of transactions per day by gain/loss",
+       x = "Number of Transactions per day", y = "Percent Gain/Loss")
 ```
+
+From here, it is pretty clear that a lower number of transactions of a particular stock equates to lower volatility of that particular stock.  However, the two stocks have different stocks have different points for the low values.
+
