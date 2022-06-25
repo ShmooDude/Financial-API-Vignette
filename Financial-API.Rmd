@@ -4,7 +4,7 @@ output: github_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 ```
 
 # Financial API and Exploratory Data Analysis
@@ -20,13 +20,15 @@ The following libraries are required to use the Financial API
 * `httr`: To get the information from the polygon API
 * `memoise`: To prevent repeated calls to the API for the same information
 * `lubridate`: For easier handling of date/time.
+* `ratelimitr`: Limits the query rate to the API below the required 5 per minute
 
-```{r, echo = FALSE, message = FALSE, warning = FALSE}
+```{r, echo = FALSE}
 library(tidyverse)
 library(jsonlite)
 library(httr)
 library(memoise)
 library(lubridate)
+library(ratelimitr)
 apiKey <- "To187CFZpgDYlj0_gWheNbOaw4MxRzvh"
 ```
 
@@ -34,31 +36,34 @@ apiKey <- "To187CFZpgDYlj0_gWheNbOaw4MxRzvh"
 
 ## Helper Functions
 
-### `retrieveJSON`
+### `getFromJSON`
 
 Utilizes `GET` and `fromJSON` to retrieve a JSON type object and convert it into something usable.  Uses `memoise` to prevent repeated queries to the API for the same information.
 
 ```{r}
+# Limit the rate at which the GET function can be called due to API limits
+limGET <- limit_rate(GET, rate(n = 5, period = 60))
+
 getFromJSON_fun <- function(URL = "https://api.polygon.io", path, query = list()) {
   # Create query list
   query$apiKey = apiKey
   
   # Get the results from the server
-  results <- GET(URL, path = path, query = query)
-  
+  results <- limGET(URL, path = path, query = query)
+
   # Convert from a JSON
   content <- rawToChar(results$content) %>% 
     fromJSON()
   
   # Continue getting information until finished
-  # while(exists("next_url", content)) {
-  #   results <- GET(content$next_url, query = query)
-  #   
-  #   new_content <- rawToChar(results$content) %>% 
-  #     fromJSON()
-  #   
-  #   append(content, new_content)
-  # }
+  while(exists("next_url", content)) {
+    results <- limGET(content$next_url, query = query)
+
+    new_content <- rawToChar(results$content) %>%
+      fromJSON()
+
+    append(content, new_content)
+  }
   
   return(content)
 }
@@ -155,15 +160,14 @@ getTickers <- function(search, type = "",
 This function returns the name of a particular ticker.
 
 ```{r}
-getTickerName <- function(search, ...) {
+getTickerName <- function(search) {
   # Retrieve the proper ticker for the search query
-  ticker <- getTickers(search, ...)
+  ticker <- getTickers(search)
   
   # Retrieve the detailed information on the ticker
   output <- getFromJSON(path = paste0("/v3/reference/tickers/", ticker))
   
-  output$results[1:2] %>%
-    as_tibble()
+  unlist(output$results[[2]])
 }
 ```
 
@@ -177,12 +181,12 @@ Takes a particular ticker retrieves the pricing information for the date span sp
 getAggregates <- function(search, multiplier = 1, 
                           timespan = c("day", "week", 
                                        "month", "quarter", "year"),
-                          from, to, ...) {
+                          from, to) {
   # Storage for options to be passed to the API
   timespan <- match.arg(timespan)
   
   # Retrieve the proper ticker for the search query
-  ticker <- getTickers(search, ...)
+  ticker <- getTickers(search)
   
   path = paste("/v2/aggs/ticker",
                                ticker, "range", multiplier, timespan, 
@@ -203,4 +207,74 @@ getAggregates <- function(search, multiplier = 1,
   
   return(output)
 }
+```
+
+## Exploratory Data Analysis
+
+Let's compare Microsoft to Apple.
+
+```{r}
+# Microsoft and Apple
+msft <- getAggregates("msft", from = "2021-01-01", to = "2021-12-31") %>%
+  add_column(name = getTickerName("msft"))
+apple <- getAggregates("aapl", from = "2021-01-01", to = "2021-12-31") %>%
+  add_column(name = getTickerName("aapl"))
+
+# Combine data frames and add new variable
+year <- bind_rows(msft, apple) 
+
+year <- mutate(year, gain = (c / o)*100-100)
+```
+
+### Gain correlation
+
+```{r}
+gain_wider <- year %>% select(name, gain) %>%
+  pivot_wider(names_from = name, values_from = gain) %>%
+  unnest()
+
+ggplot(gain_wider, aes(x = `Microsoft Corp`, y = `Apple Inc.`)) + 
+  geom_point() +
+  geom_smooth(method=lm, se=FALSE) + 
+  labs(title = "Correlation Graph")
+```
+
+As we can see, the two are positively correlated with `r round(cor(gain_wider["Microsoft Corp"], gain_wider["Apple Inc."])*100, 0)`% correlation.
+
+### Contengency table
+
+NEEDED
+
+### Histogram
+
+```{r}
+g <- ggplot(year)
+
+g + aes(x = n) + 
+  geom_histogram() +
+  geom_density() +
+  facet_grid(~name) +
+  labs(title = "Histogram of number of transactions per day")
+```
+
+### Boxplot
+
+NEEDS FIXING
+
+```{r}
+g + aes(x = n) + 
+  coord_flip() +
+  geom_boxplot() +
+  facet_grid(~name) +
+  labs(title = "Boxplot of number of transactions per day")
+```
+
+### Line
+
+```{r}
+g + aes(x = t, y = c) + 
+  geom_line() +
+  facet_grid(~name) +
+  labs(title = "Closing price over 2021",
+       x = "Date", y = "Closing Price")
 ```
